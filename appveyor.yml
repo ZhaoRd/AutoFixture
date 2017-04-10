@@ -1,11 +1,80 @@
 image: Visual Studio 2015
 
+environment:
+  NUGET_API_KEY:
+    secure: Rh/UHYn7HGj8a7LFWo9C1rSA0sHSQNV3wIqj9bvwRR8yLmCXu9JmbNkmkctk2cBn
+  MYGET_API_KEY:
+    secure: hA4Ut1N2lrrdEtAN24Bty/FNiU0d/Ur/dLYSqpr8jKHOvoO7MU4jD+KwzUvATh+E
+
 pull_requests:
   do_not_increment_build_number: true
 
 build_script:
 - ps: |
-    & .\build.cmd CompleteBuild
+    # A trick to test if variable is defined. Number could never be null.
+    $isPullRequest = -not ($Env:APPVEYOR_PULL_REQUEST_NUMBER -eq $null)
+    $isTagBuild = $Env:APPVEYOR_REPO_TAG -eq "true"
+    $branchName = $Env:APPVEYOR_REPO_BRANCH
+    $tagName = $Env:APPVEYOR_REPO_TAG_NAME
+
+    Write-Host "[BUILD CONTEXT INFO] Is PR: $isPullRequest, is tag: $isTagBuild, branch name: '$branchName', tag name: '$tagName'" -ForegroundColor Green
+
+    # ===== FAKE Actions =====
+    function BuildOnly {
+      & .\build.cmd CompleteBuild BuildVersion=git BuildNumber=$($Env:APPVEYOR_BUILD_NUMBER)
+    }
+
+    function PublishPublic {
+      & .\build.cmd PublishNuGetPublic NuGetPublicKey="$($Env:NUGET_API_KEY)" BuildVersion=git BuildNumber=$($Env:APPVEYOR_BUILD_NUMBER) 
+    }
+    
+    function PublishPrivate {
+      & .\build.cmd PublishNuGetPrivate NuGetPrivateKey="$($Env:MYGET_API_KEY)" BuildVersion=git BuildNumber=$($Env:APPVEYOR_BUILD_NUMBER) 
+    }
+
+    # ===== Event handlers =====
+    function HandleTagIsNotSemVer {
+      $isSemVerTag = $tagName -match '^v[\d\.]+.*'
+      if($isTagBuild -and (-not $isSemVerTag)) {
+        Write-Host "[Tag] Trigger build only - this is not a SemVer tag" -ForegroundColor Green
+        BuildOnly
+
+        exit 0
+      }
+    }
+
+    function HandleTagRegular {
+      if($isTagBuild) {
+        Write-Host "[Tag] Trigger build & push to public feed" -ForegroundColor Green
+        PublishPublic
+
+        exit 0
+      }
+    }
+
+    function HandlePullRequest {
+      if($isPullRequest) {
+        Write-Host "[PR] Trigger verification build only" -ForegroundColor Green
+        BuildOnly
+
+        exit 0
+      }
+    }
+
+    function HandleRegular {
+        # If this is a custom branch - just build the code without publishing the artifacts somewhere.
+        Write-Host "[Regular branch] Trigger verification build only" -ForegroundColor Green
+        BuildOnly
+
+        exit 0
+    }
+
+    # ==== DISPATCH HANDLERS ONE BY ONE TILL FIRST MATCHING. SCRIPT STOPS ON FIRST MATCHING ====
+    HandleTagIsNotSemVer
+    HandleTagRegular
+    # Should be checked _before_ branch name, because branch name is set to "base" branch for Pull Requests
+    HandlePullRequest
+    HandleRegular
 
 test_script:
 - ps: |
