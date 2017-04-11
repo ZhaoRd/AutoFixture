@@ -9,6 +9,11 @@ open System.Text.RegularExpressions
 let releaseFolder = "Release"
 let nunitToolsFolder = "Packages/NUnit.Runners.2.6.2/tools"
 let nuGetOutputFolder = "NuGetPackages"
+let nuGetPackages = !! (nuGetOutputFolder @@ "*.nupkg" )
+                    // Skip symbol packages because NuGet publish symbols automatically when package is published
+                    -- (nuGetOutputFolder @@ "*.symbols.nupkg")
+                    // Currently AutoFakeItEasy2 has been deprecated and is not being published to the feeds.
+                    -- (nuGetOutputFolder @@ "AutoFixture.AutoFakeItEasy2.*" )
 let solutionsToBuild = !! "Src/All.sln"
 let processorArchitecture = environVar "PROCESSOR_ARCHITECTURE"
 
@@ -198,7 +203,57 @@ Target "NuGetPack" (fun _ ->
                                                    SymbolPackage = NugetSymbolPackage.Nuspec }) f)
 )
 
-Target "CompleteBuild" (fun _ -> ())
+// Starting from NuGet 3.5 it's possible to push package and symbols simultaneously for the custom feeds.
+// FAKE API doesn't provide appropriate API, therefore we use NuGet tool directly and pass the necessary parameters.
+let publishPackageWithSymbols package packageFeed symbolFeed accessKey =
+    // Strip sensitive data from FAKE output
+    let replaceAccessKey (text : string) = text.Replace(accessKey, "PRIVATEKEY")
+
+    let originalTracing = enableProcessTracing
+    enableProcessTracing <- false
+
+    let defaultParameters = NuGetDefaults()
+
+    let baseArgs = sprintf "push %s \"%s\" -Source %s" package accessKey packageFeed
+    let args = match symbolFeed with
+               | "" -> baseArgs
+               | _  -> sprintf "%s -SymbolSource %s -SymbolApiKey \"%s\"" baseArgs symbolFeed accessKey
+
+    tracefn "%s %s" defaultParameters.ToolPath (replaceAccessKey args) 
+
+    try
+        let result = ExecProcess (fun info -> info.FileName <- defaultParameters.ToolPath
+                                              info.Arguments <- args)
+                                 defaultParameters.TimeOut
+
+        enableProcessTracing <- originalTracing
+        if result <> 0 then failwithf "Error during NuGet push. %s %s" defaultParameters.ToolPath args
+    with exn ->
+        if isNull exn.InnerException then exn.Message else sprintf "%s\r\n%s" exn.Message exn.InnerException.Message
+        |> replaceAccessKey
+        |> failwith
+
+Target "PublishNuGetPublicOnly" (fun _ ->
+    let feed = "https://www.nuget.org/api/v2/package"
+    let key = getBuildParam "NuGetPublicKey"
+
+    nuGetPackages
+    |> Seq.iter (fun p -> publishPackageWithSymbols p feed "" key)
+)
+
+Target "PublishNuGetPrivateOnly" (fun _ ->
+    let packageFeed = "https://www.myget.org/F/autofixture/api/v2/package"
+    let symbolFeed = "https://www.myget.org/F/autofixture/symbols/api/v2/package"
+    let key = getBuildParam "NuGetPrivateKey"
+
+    nuGetPackages
+    |> Seq.iter (fun p -> publishPackageWithSymbols p packageFeed symbolFeed key)
+)
+
+Target "CompleteBuild"       (fun _ -> ())
+Target "PublishNuGetPrivate" (fun _ -> ())
+Target "PublishNuGetPublic"  (fun _ -> ())
+Target "PublishNuGetAll"     (fun _ -> ())
 
 "CleanVerify"  ==> "CleanAll"
 "CleanRelease" ==> "CleanAll"
@@ -224,5 +279,14 @@ Target "CompleteBuild" (fun _ -> ())
 "CopyToReleaseFolder" ==> "NuGetPack"
 
 "NuGetPack" ==> "CompleteBuild"
+
+"NuGetPack"              ==> "PublishNuGetPublic"
+"PublishNuGetPublicOnly" ==> "PublishNuGetPublic"
+
+"NuGetPack"               ==> "PublishNuGetPrivate"
+"PublishNuGetPrivateOnly" ==> "PublishNuGetPrivate"
+
+"PublishNuGetPublic"  ==> "PublishNuGetAll"
+"PublishNuGetPrivate" ==> "PublishNuGetAll"
 
 RunTargetOrDefault "CompleteBuild"
