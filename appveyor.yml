@@ -33,13 +33,16 @@ build_script:
     }
 
     # ===== Event handlers =====
+    # A workaround for the https://github.com/appveyor/ci/issues/1090. Otherwise, exit could be used.
+    $handled = $false
+
     function HandleTagIsNotSemVer {
       $isSemVerTag = $tagName -match '^v[\d\.]+.*'
       if($isTagBuild -and (-not $isSemVerTag)) {
         Write-Host "[Tag] Trigger build only - this is not a SemVer tag" -ForegroundColor Green
         BuildOnly
 
-        exit 0
+        $script:handled = $true
       }
     }
 
@@ -48,7 +51,7 @@ build_script:
         Write-Host "[Tag] Trigger build & push to public feed" -ForegroundColor Green
         PublishPublic
 
-        exit 0
+        $script:handled = $true
       }
     }
 
@@ -57,7 +60,7 @@ build_script:
         Write-Host "[PR] Trigger verification build only" -ForegroundColor Green
         BuildOnly
 
-        exit 0
+        $script:handled = $true
       }
     }
 
@@ -66,15 +69,15 @@ build_script:
         Write-Host "[Regular branch] Trigger verification build only" -ForegroundColor Green
         BuildOnly
 
-        exit 0
+        $script:handled = $true
     }
 
     # ==== DISPATCH HANDLERS ONE BY ONE TILL FIRST MATCHING. SCRIPT STOPS ON FIRST MATCHING ====
-    HandleTagIsNotSemVer
-    HandleTagRegular
+    HandleTagIsNotSemVer                   ;if($handled) { return; }
+    HandleTagRegular                       ;if($handled) { return; }
     # Should be checked _before_ branch name, because branch name is set to "base" branch for Pull Requests
-    HandlePullRequest
-    HandleRegular
+    HandlePullRequest                      ;if($handled) { return; }
+    HandleRegular                          ;if($handled) { return; }
 
 test_script:
 - ps: |
